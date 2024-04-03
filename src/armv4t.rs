@@ -51,7 +51,7 @@ pub struct InstFormat {
     pub data: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct DataProcess {
     #[deku(bits=4)]
@@ -73,7 +73,7 @@ pub struct DataProcess {
 
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct Multiply {
     #[deku(bits=4)]
@@ -96,7 +96,7 @@ pub struct Multiply {
     pub rm: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct MultiplyLong {
     #[deku(bits=4)]
@@ -114,14 +114,14 @@ pub struct MultiplyLong {
     #[deku(bits=4)]
     pub rd_lo: u32,
     #[deku(bits=4)]
-    pub rn: u32,
+    pub rs: u32,
     #[deku(bits=4)]
     pub _1001: u32,
     #[deku(bits=4)]
     pub rm: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct SingleDataSwap {
     #[deku(bits=4)]
@@ -142,7 +142,7 @@ pub struct SingleDataSwap {
     pub rm: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct BranchExchange {
     #[deku(bits=4)]
@@ -153,7 +153,7 @@ pub struct BranchExchange {
     pub rn: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct HalfWordDataTransfer {
     #[deku(bits=4)]
@@ -189,7 +189,7 @@ pub struct HalfWordDataTransfer {
 }
 
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct SingleDataTransfer {
     #[deku(bits=4)]
@@ -217,7 +217,7 @@ pub struct SingleDataTransfer {
 }
 
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct BlockDataTransfer {
     #[deku(bits=4)]
@@ -240,7 +240,7 @@ pub struct BlockDataTransfer {
     pub register_list: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct Branch {
     #[deku(bits=4)]
@@ -253,7 +253,7 @@ pub struct Branch {
     pub offset: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct CoProcessorDataTransfer {
     #[deku(bits=4)]
@@ -280,7 +280,7 @@ pub struct CoProcessorDataTransfer {
     pub offset: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct CoProcessorDataOperation {
     #[deku(bits=4)]
@@ -303,7 +303,7 @@ pub struct CoProcessorDataOperation {
     pub crm: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct CoProcessorRegisterTransfer {
     #[deku(bits=4)]
@@ -328,7 +328,7 @@ pub struct CoProcessorRegisterTransfer {
     pub crm: u32,
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
 pub struct SoftwareInterrupt {
     #[deku(bits=4)]
@@ -345,6 +345,7 @@ pub struct ShifterOperand {
 }
 
 
+#[derive(Copy, Clone)]
 pub enum InstKind {
     DataProcess(DataProcess),
     Multiply(Multiply),
@@ -384,6 +385,8 @@ pub struct Cpu<T: Bus> {
     pub cpsr: CpsrFlags,
     pub spsr: [Word; 5],
     pub bus: T,
+    pub inst: Option<Word>,
+    pub decoded_inst : Option<(InstKind, u32)>,
 }
 
 
@@ -391,47 +394,195 @@ impl<T> Cpu<T>
 where T: Bus
 {
     pub fn step(&mut self) {
-        let inst: Word = self.fetch();
-        let decoded_inst = self.decode(inst);
-        self.execute(decoded_inst, (inst as u32) >> 28);
-        self.advance_pc(4);
+        let mut decoded_inst: Option<(InstKind, u32)> = None;
+        match self.inst {
+            // There is a instruction in pipeline, then decode
+            Some(inst) => {
+                decoded_inst = Some(self.decode(inst));
+            }
+            None => (),
+        }
+        self.inst = Some(self.fetch());
+
+        match self.decoded_inst {
+            Some((inst, cond)) => {
+                let is_pc_changed = self.execute(inst, cond);
+                if is_pc_changed {
+                    ()
+                }
+                else {
+                    self.advance_pc(0x4);
+                }
+            }
+            None => self.advance_pc(0x4),
+
+        }
+        self.decoded_inst = decoded_inst;
+
     }
 
-    pub fn execute(&mut self, decoded_inst: InstKind, cond: u32) {
+    pub fn flush_pipeline(&mut self) {
+        self.inst = None;
+        self.decoded_inst = None;
+    }
+
+    pub fn execute(&mut self, decoded_inst: InstKind, cond: u32) -> bool {
+        let mut is_pc_changed = false;
         if self.is_condition_passed(cond){
             match decoded_inst {
                 InstKind::DataProcess(inst) => {
                     let shifter_operand = self.get_shifter_operand(&inst);
+                    let mut n = self.cpsr.n;
+                    let mut z = self.cpsr.z;
                     let mut c = self.cpsr.c;
                     let mut v = self.cpsr.v;
+
+                    if inst.rd == 15 {
+                        is_pc_changed = true;
+                    }
                     let result: u32 = match inst.opcode {
                         // AND
-                        0x0 => self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand,
+                        0x0 => {
+                            let _result = self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            _result
+                        },
                         // EOR
-                        0x1 => self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand,
+                        0x1 => {
+                            let _result = self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            _result
+                        },
                         // SUB
                         0x2 => {
-                            self.get_gpr(inst.rn as u8) - shifter_operand.shifter_operand
+                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = (self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand) as u32;
+                            _result
                         },
-                        0x3 => self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand,
-                        0x4 => self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand,
-                        0x5 => self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand,
-                        0x6 => self.get_gpr(inst.rn as u8) - shifter_operand.shifter_operand,
-                        0x7 => self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand,
-                        0x8 => self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand,
-                        0x9 => self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand,
-                        0xA => self.get_gpr(inst.rn as u8) - shifter_operand.shifter_operand,
-                        0xB => self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand,
-                        0xC => self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand,
-                        0xD => self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand,
-                        0xE => self.get_gpr(inst.rn as u8) - shifter_operand.shifter_operand,
-                        0xF => self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand,
+                        // RSB
+                        0x3 => {
+                            let (_result, _v) = shifter_operand.shifter_operand.overflowing_sub(self.get_gpr(inst.rn as u8));
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = !(self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand) as u32;
+                            _result
+                        },
+                        // ADD
+                        0x4 => {
+                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_add(shifter_operand.shifter_operand);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand >= 0x80000000) as u32;
+                            _result
+                        },
+                        // ADC
+                        0x5 => {
+                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_add(shifter_operand.shifter_operand + self.cpsr.c);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand + self.cpsr.c >= 0x80000000) as u32;
+                            _result
+                        },
+                        // SBC
+                        0x6 => {
+                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand + self.cpsr.c);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = !(self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand + self.cpsr.c) as u32;
+                            _result
+                        },
+                        // RSC
+                        0x7 => {
+                            let (_result, _v) = shifter_operand.shifter_operand.overflowing_sub(self.get_gpr(inst.rn as u8) + self.cpsr.c);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = !(self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand + self.cpsr.c) as u32;
+                            _result
+                        },
+                        // TST
+                        0x8 => {
+                            let _result = self.get_gpr(inst.rn as u8) & shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            self.get_gpr(inst.rd as u8)
+                        },
+                        // TEQ
+                        0x9 => {
+                            let _result = self.get_gpr(inst.rn as u8) ^ shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            self.get_gpr(inst.rd as u8)
+                        },
+                        // CMP
+                        0xA => {
+                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = (self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand) as u32;
+                            self.get_gpr(inst.rd as u8)
+                        },
+                        // CMN
+                        0xB => {
+                            let (_result, _v) = shifter_operand.shifter_operand.overflowing_add(self.get_gpr(inst.rn as u8));
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            v = _v as u32;
+                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand >= 0x80000000) as u32;
+                            self.get_gpr(inst.rd as u8)
+                        },
+                        // ORR
+                        0xC => {
+                            let _result = self.get_gpr(inst.rn as u8) | shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            _result
+                        },
+                        // MOV
+                        0xD => {
+                            let _result = shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            shifter_operand.shifter_operand
+                        },
+                        // BIC
+                        0xE => {
+                            let _result = self.get_gpr(inst.rn as u8) & (!shifter_operand.shifter_operand);
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            _result
+                        },
+                        // MVN
+                        0xF => {
+                            let _result = !shifter_operand.shifter_operand;
+                            n = ((_result & 0x80000000) != 0) as u32;
+                            z = (_result == 0) as u32;
+                            c = shifter_operand.carry_out as u32;
+                            shifter_operand.shifter_operand
+                        }
                         _ => 0,
                     };
                     self.set_gpr(inst.rd as u8, result);
                     if inst.s != 0 && inst.rd != 15{
-                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
-                        self.cpsr.z = (result == 0) as u32;
+                        self.cpsr.n = n;
+                        self.cpsr.z = z;
                         self.cpsr.c = c;
                         self.cpsr.v = v;
                     }
@@ -439,17 +590,45 @@ where T: Bus
                         self.store_spsr();
                     }
                 },
+                InstKind::Multiply(inst) => {
+                    let result: u32 = if inst.a != 0 {
+                        self.get_gpr(inst.rm as u8).wrapping_mul(self.get_gpr(inst.rs as u8))
+                    }
+                    else {
+                        self.get_gpr(inst.rm as u8).wrapping_mul(self.get_gpr(inst.rs as u8)) + self.get_gpr(inst.rd as u8)
+                    };
+                    self.set_gpr(inst.rd as u8, result);
+                    if inst.s != 0 {
+                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
+                        self.cpsr.z = (result == 0) as u32;
+                    }
+                },
+                InstKind::MultiplyLong(inst) => {
+                    let result: u64 = if inst.a != 0 {
+                        (self.get_gpr(inst.rm as u8) as u64).wrapping_mul(self.get_gpr(inst.rs as u8) as u64)
+                    }
+                    else {
+                        (self.get_gpr(inst.rm as u8) as u64).wrapping_mul(self.get_gpr(inst.rs as u8) as u64) + ((self.get_gpr(inst.rd_lo as u8) as u64) << 32) + self.get_gpr(inst.rd_hi as u8) as u64
+                    };
+                    self.set_gpr(inst.rd_lo as u8, result as u32);
+                    self.set_gpr(inst.rd_hi as u8, (result >> 32) as u32);
+                    if inst.s != 0 {
+                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
+                        self.cpsr.z = (result == 0) as u32;
+                    }
+                },
                 _ => (),
             }
+            is_pc_changed
         }
         else{
-            ()
+            is_pc_changed
         }
     }
 
     pub fn is_condition_passed(&self, cond: u32) -> bool {
         let n = self.cpsr.n != 0;
-        let z = self.cpsr.z != 0;
+        let z = self.cpsr.z != 0; 
         let c = self.cpsr.c != 0;
         let v = self.cpsr.v != 0;
         match cond {
@@ -474,7 +653,7 @@ where T: Bus
 
     pub fn get_shifter_operand(&self, inst: &DataProcess) -> ShifterOperand {
         // Immediate
-        if inst.i == 0 {
+        if inst.i != 0 {
             let rotate_imm: u32 = (inst.operand2 & 0xF00) >> 8;
             let imm: u32 = inst.operand2 & 0xFF;
             return ShifterOperand {
@@ -544,7 +723,7 @@ where T: Bus
             // Register shift by register
             else {
                 let rs = (inst.operand2 & 0xF00) >> 8;
-                let shift_amount = (self.get_gpr(rs as u8) & 0xFF);
+                let shift_amount = self.get_gpr(rs as u8) & 0xFF;
                 let shift = (inst.operand2 & 0x60) >> 5;
                 let rm: u8 = (inst.operand2 & 0xF) as u8;
 
@@ -625,11 +804,11 @@ where T: Bus
     pub fn fetch(&mut self) -> Word {
         let pc = self.get_gpr(15);
         let mut data: Word = 0;
-        self.bus.access(pc, &mut data, BusRW::Read);
+        _ = self.bus.access(pc, &mut data, BusRW::Read);
         data
     }
 
-    pub fn decode(&self, inst: Word) -> InstKind {
+    pub fn decode(&self, inst: Word) -> (InstKind, u32) {
         const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
         const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
         const MULTIPLY_LONG: InstFormat                 = InstFormat{ mask: 0x0FC000F0, data: 0x00800090 };
@@ -644,60 +823,62 @@ where T: Bus
         const CO_PROCESOR_REGISTER_TRANSFER: InstFormat = InstFormat{ mask: 0x0F000010, data: 0x0E000010 };
         const SOFTWARE_INTERRUPT: InstFormat            = InstFormat{ mask: 0x0F000000, data: 0x0F000000 };
 
+        let cond: u32 = (inst & 0xF0000000) >> 28;
+
         if Cpu::<T>::is_match_format(inst, DATA_PROCESS) {
             let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::DataProcess(data_process);
+            return (InstKind::DataProcess(data_process), cond);
         }
         else if Cpu::<T>::is_match_format(inst, MULTIPLY){
             let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::Multiply(multiply);
+            return (InstKind::Multiply(multiply), cond);
         }
         else if Cpu::<T>::is_match_format(inst, MULTIPLY_LONG){
             let (_, multiply_long) = MultiplyLong::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::MultiplyLong(multiply_long);
+            return (InstKind::MultiplyLong(multiply_long), cond);
         }
         else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_SWAP){
             let (_, single_data_swap) = SingleDataSwap::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::SingleDataSwap(single_data_swap);
+            return (InstKind::SingleDataSwap(single_data_swap), cond);
         }
         else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
             let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::BranchExchange(branch_exchange);
+            return (InstKind::BranchExchange(branch_exchange), cond);
         }
         else if Cpu::<T>::is_match_format(inst, HW_DATA_TRANSFER){
             let (_, half_word_data_transfer) = HalfWordDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::HalfWordDataTransfer(half_word_data_transfer);
+            return (InstKind::HalfWordDataTransfer(half_word_data_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
             let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::SingleDataTransfer(single_data_transfer);
+            return (InstKind::SingleDataTransfer(single_data_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, BLOCK_DATA_TRANSFER){
             let (_, block_data_transfer) = BlockDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::BlockDataTransfer(block_data_transfer);
+            return (InstKind::BlockDataTransfer(block_data_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, BRANCH){
             let (_, branch) = Branch::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::Branch(branch);
+            return (InstKind::Branch(branch), cond);
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
             let (_, co_processor_data_transfer) = CoProcessorDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::CoProcessorDataTransfer(co_processor_data_transfer);
+            return (InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
             let (_, co_processor_data_operation) = CoProcessorDataOperation::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::CoProcessorDataOperation(co_processor_data_operation);
+            return (InstKind::CoProcessorDataOperation(co_processor_data_operation), cond);
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
             let (_, co_processor_register_transfer) = CoProcessorRegisterTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer);
+            return (InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, SOFTWARE_INTERRUPT){
             let (_, software_interrupt) = SoftwareInterrupt::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return InstKind::SoftwareInterrupt(software_interrupt);
+            return (InstKind::SoftwareInterrupt(software_interrupt), cond);
         }
         else {
-            return InstKind::Undefined;
+            return (InstKind::Undefined, cond);
         }
     }
 
@@ -732,17 +913,20 @@ where T: Bus
             },
             spsr: [0; 5],
             bus: bus,
+            inst: None,
+            decoded_inst: None,
         }
     }
 
     pub fn advance_pc(&mut self, offset: Word) {
-        self.set_gpr(15, self.get_gpr(15) + offset);
+        self.r[15] += offset;
     }
 
     pub fn reset (&mut self) {
         self.mode = ProcessorMode::Supervisor(0);
         // Overwrite R14_svc by copying the current PC to it
         self.set_gpr(14, self.get_gpr(15));
+        self.set_gpr(15, 0x00000000);
         self.store_spsr();
         self.r = [0; 16];
         self.banked = BankedRegisters {
@@ -770,23 +954,28 @@ where T: Bus
     pub fn get_gpr(&self, reg: u8) -> Word {
         match self.mode {
             ProcessorMode::User(_) => self.r[reg as usize],
-            ProcessorMode::FIQ(_) => if reg < 8 { self.r[reg as usize] } else { self.banked.fiq[reg as usize - 8] },
-            ProcessorMode::IRQ(_) => if reg < 13 { self.r[reg as usize] } else { self.banked.irq[reg as usize - 13] },
-            ProcessorMode::Supervisor(_) => if reg < 13 { self.r[reg as usize] } else { self.banked.svc[reg as usize - 13] },
-            ProcessorMode::Abort(_) => if reg < 13 { self.r[reg as usize] } else { self.banked.abt[reg as usize - 13] },
-            ProcessorMode::Undefined(_) => if reg < 13 { self.r[reg as usize] } else { self.banked.und[reg as usize - 13] },
+            ProcessorMode::FIQ(_) => if reg < 8 || reg == 15 { self.r[reg as usize] } else { self.banked.fiq[reg as usize - 8] },
+            ProcessorMode::IRQ(_) => if reg < 13 || reg == 15 { self.r[reg as usize] } else { self.banked.irq[reg as usize - 13] },
+            ProcessorMode::Supervisor(_) => if reg < 13 || reg == 15 { self.r[reg as usize] } else { self.banked.svc[reg as usize - 13] },
+            ProcessorMode::Abort(_) => if reg < 13 || reg == 15 { self.r[reg as usize] } else { self.banked.abt[reg as usize - 13] },
+            ProcessorMode::Undefined(_) => if reg < 13 || reg == 15 { self.r[reg as usize] } else { self.banked.und[reg as usize - 13] },
             ProcessorMode::System(_) => self.r[reg as usize],
         }
     }
 
     pub fn set_gpr(&mut self, reg: u8, value: Word) {
+        if reg == 15 {
+            self.r[reg as usize] = value;
+            self.flush_pipeline();
+            ()
+        }
         match self.mode {
             ProcessorMode::User(_) => self.r[reg as usize] = value,
-            ProcessorMode::FIQ(_) => if reg < 8 { self.r[reg as usize] = value } else { self.banked.fiq[reg as usize - 8] = value },
-            ProcessorMode::IRQ(_) => if reg < 13 { self.r[reg as usize] = value } else { self.banked.irq[reg as usize - 13] = value },
-            ProcessorMode::Supervisor(_) => if reg < 13 { self.r[reg as usize] = value } else { self.banked.svc[reg as usize - 13] = value },
-            ProcessorMode::Abort(_) => if reg < 13 { self.r[reg as usize] = value } else { self.banked.abt[reg as usize - 13] = value },
-            ProcessorMode::Undefined(_) => if reg < 13 { self.r[reg as usize] = value } else { self.banked.und[reg as usize - 13] = value },
+            ProcessorMode::FIQ(_) => if reg < 8 || reg == 15 { self.r[reg as usize] = value } else { self.banked.fiq[reg as usize - 8] = value },
+            ProcessorMode::IRQ(_) => if reg < 13 || reg == 15 { self.r[reg as usize] = value } else { self.banked.irq[reg as usize - 13] = value },
+            ProcessorMode::Supervisor(_) => if reg < 13 || reg == 15 { self.r[reg as usize] = value } else { self.banked.svc[reg as usize - 13] = value },
+            ProcessorMode::Abort(_) => if reg < 13 || reg == 15 { self.r[reg as usize] = value } else { self.banked.abt[reg as usize - 13] = value },
+            ProcessorMode::Undefined(_) => if reg < 13 || reg == 15 { self.r[reg as usize] = value } else { self.banked.und[reg as usize - 13] = value },
             ProcessorMode::System(_) => self.r[reg as usize] = value,
         }
     }
@@ -798,6 +987,15 @@ where T: Bus
 
     pub fn set_mode(&mut self, mode: ProcessorMode) {
         self.mode = mode;
+        match self.mode {
+            ProcessorMode::User(_) => self.cpsr.mode = 0x10,
+            ProcessorMode::FIQ(_) => self.cpsr.mode = 0x11,
+            ProcessorMode::IRQ(_) => self.cpsr.mode = 0x12,
+            ProcessorMode::Supervisor(_) => self.cpsr.mode = 0x13,
+            ProcessorMode::Abort(_) => self.cpsr.mode = 0x17,
+            ProcessorMode::Undefined(_) => self.cpsr.mode = 0x1B,
+            ProcessorMode::System(_) => self.cpsr.mode = 0x1F,
+        }   
     }
 
     pub fn get_cpsr(&self) -> CpsrFlags {
@@ -828,5 +1026,26 @@ where T: Bus
             ProcessorMode::Undefined(_) => self.spsr[4] = value,
             _ => (),
         }
+    }
+}
+
+
+impl<T: Bus> std::fmt::Display for Cpu<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut formatted_string: String = "".to_string();
+
+
+        for i in 0..16 {
+            formatted_string.push_str(&format!("r{:<2}: 0x{:08x}", i, self.get_gpr(i as u8)));
+            if i % 4 == 3 {
+                formatted_string.push_str("\n");
+            }
+            else {
+                formatted_string.push_str(" ");
+                
+            }
+        }
+
+        write!(f, "{}", formatted_string)
     }
 }
