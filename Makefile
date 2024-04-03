@@ -1,12 +1,16 @@
 TARGET = program.bin
-AS = arm-none-eabi-as
+CC = arm-none-eabi-gcc
 OBJCOPY = arm-none-eabi-objcopy
-ASFLAGS = -march=armv4t
+CFLAGS = -march=armv4t -O0
 
 
 
 $(TARGET): program.o
 	$(OBJCOPY) -O binary --only-section=.text $< $@
 
-program.o: program.s
-	$(AS) $(ASFLAGS) -o $@ $<
+program.o: program.c
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+.PHONY: clean
+clean:
+	rm -f *.o *.bin

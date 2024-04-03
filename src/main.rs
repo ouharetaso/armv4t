@@ -48,32 +48,11 @@ fn main() {
     for i in 0..program.len(){
         mem.load(i as u32, program[i]);
     }
-    // _ =mem.access(0, &mut 0xe280002a, BusRW::Write);
     let mut cpu = Cpu::<MyMemory>::new(mem);
     cpu.reset();
     println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
-    cpu.step();
-    println!("{}", cpu);
+
+    loop{
+        cpu.step();
+    }
 }

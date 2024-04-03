@@ -46,9 +46,65 @@ pub struct CpsrFlags {
     pub mode: u32,
 }
 
+
 pub struct InstFormat {
     pub mask: u32,
     pub data: u32,
+}
+
+
+pub enum Mnemonic{
+    ADC,
+    ADD,
+    AND,
+    B,
+    BL,
+    BIC,
+    BKPT,
+    BLX,
+    BX,
+    CDP,
+    CLZ,
+    CMN,
+    CMP,
+    EOR,
+    LDC,
+    LDM,
+    LDR,
+    LDRB,
+    LDRBT,
+    LDRH,
+    LDRT,
+    MCR,
+    MLA,
+    MOV,
+    MRC,
+    MRS,
+    MSR,
+    MUL,
+    MVN,
+    ORR,
+    RSB,
+    RSC,
+    SBC,
+    SMLAL,
+    SMULL,
+    STC,
+    STM,
+    STR,
+    STRB,
+    STRBT,
+    STRH,
+    STRT,
+    SUB,
+    SWI,
+    SWP,
+    SWPB,
+    TEQ,
+    TST,
+    UMLAL,
+    UMULL,
+    UND,
 }
 
 #[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
@@ -70,7 +126,6 @@ pub struct DataProcess {
     pub rd: u32,
     #[deku(bits=12)]
     pub operand2: u32,
-
 }
 
 #[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
@@ -408,17 +463,18 @@ where T: Bus
             Some((inst, cond)) => {
                 let is_pc_changed = self.execute(inst, cond);
                 if is_pc_changed {
-                    ()
+                    self.flush_pipeline();
                 }
                 else {
                     self.advance_pc(0x4);
+                    self.decoded_inst = decoded_inst;
                 }
             }
-            None => self.advance_pc(0x4),
-
+            None => {
+                self.advance_pc(0x4);
+                self.decoded_inst = decoded_inst;
+            },
         }
-        self.decoded_inst = decoded_inst;
-
     }
 
     pub fn flush_pipeline(&mut self) {
@@ -481,7 +537,7 @@ where T: Bus
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
                             v = _v as u32;
-                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand >= 0x80000000) as u32;
+                            c = ((self.get_gpr(inst.rn as u8) as u64) + (shifter_operand.shifter_operand as u64) >= 0x100000000) as u32;
                             _result
                         },
                         // ADC
@@ -490,7 +546,7 @@ where T: Bus
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
                             v = _v as u32;
-                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand + self.cpsr.c >= 0x80000000) as u32;
+                            c = ((self.get_gpr(inst.rn as u8) as u64) + (shifter_operand.shifter_operand as u64) + (self.cpsr.c as u64) >= 0x100000000) as u32;
                             _result
                         },
                         // SBC
@@ -529,20 +585,20 @@ where T: Bus
                         },
                         // CMP
                         0xA => {
-                            let (_result, _v) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand);
+                            let (_result, _c) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand);
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
-                            v = _v as u32;
-                            c = (self.get_gpr(inst.rn as u8) >= shifter_operand.shifter_operand) as u32;
+                            v = Cpu::<T>::check_sub_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
+                            c = _c as u32;
                             self.get_gpr(inst.rd as u8)
                         },
                         // CMN
                         0xB => {
-                            let (_result, _v) = shifter_operand.shifter_operand.overflowing_add(self.get_gpr(inst.rn as u8));
+                            let (_result, _c) = shifter_operand.shifter_operand.overflowing_add(self.get_gpr(inst.rn as u8));
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
-                            v = _v as u32;
-                            c = (self.get_gpr(inst.rn as u8) + shifter_operand.shifter_operand >= 0x80000000) as u32;
+                            v = Cpu::<T>::check_add_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
+                            c = _c as u32;
                             self.get_gpr(inst.rd as u8)
                         },
                         // ORR
@@ -586,44 +642,128 @@ where T: Bus
                         self.cpsr.c = c;
                         self.cpsr.v = v;
                     }
-                    else {
+                    else if inst.rd == 15 {
                         self.store_spsr();
                     }
-                },
-                InstKind::Multiply(inst) => {
-                    let result: u32 = if inst.a != 0 {
-                        self.get_gpr(inst.rm as u8).wrapping_mul(self.get_gpr(inst.rs as u8))
-                    }
                     else {
-                        self.get_gpr(inst.rm as u8).wrapping_mul(self.get_gpr(inst.rs as u8)) + self.get_gpr(inst.rd as u8)
-                    };
-                    self.set_gpr(inst.rd as u8, result);
-                    if inst.s != 0 {
-                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
-                        self.cpsr.z = (result == 0) as u32;
+                        ()
                     }
                 },
-                InstKind::MultiplyLong(inst) => {
-                    let result: u64 = if inst.a != 0 {
-                        (self.get_gpr(inst.rm as u8) as u64).wrapping_mul(self.get_gpr(inst.rs as u8) as u64)
+                InstKind::Branch(inst) => {
+                    let offset = inst.offset << 2;
+                    let link = inst.l != 0;
+                    if link {
+                        self.set_gpr(14, self.get_gpr(15) - 4);
                     }
-                    else {
-                        (self.get_gpr(inst.rm as u8) as u64).wrapping_mul(self.get_gpr(inst.rs as u8) as u64) + ((self.get_gpr(inst.rd_lo as u8) as u64) << 32) + self.get_gpr(inst.rd_hi as u8) as u64
-                    };
-                    self.set_gpr(inst.rd_lo as u8, result as u32);
-                    self.set_gpr(inst.rd_hi as u8, (result >> 32) as u32);
-                    if inst.s != 0 {
-                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
-                        self.cpsr.z = (result == 0) as u32;
-                    }
+                    self.set_gpr(   15, self.get_gpr(15) + offset);
+                    is_pc_changed = true;
                 },
-                _ => (),
+                _ => {
+                    println!("{}", self);
+                    panic!("Undefined instruction");
+                },
             }
             is_pc_changed
         }
         else{
             is_pc_changed
         }
+    }
+
+    pub fn decode(&self, inst: Word) -> (InstKind, u32) {
+        const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
+        const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
+        const MULTIPLY_LONG: InstFormat                 = InstFormat{ mask: 0x0FC000F0, data: 0x00800090 };
+        const SINGLE_DATA_SWAP: InstFormat              = InstFormat{ mask: 0x0FB00FF0, data: 0x01000090 };
+        const BRANCH_EXCHANGE: InstFormat               = InstFormat{ mask: 0x0FFFFFF0, data: 0x012FFF10 };
+        const HW_DATA_TRANSFER: InstFormat              = InstFormat{ mask: 0x0E000090, data: 0x00000090 };
+        const SINGLE_DATA_TRANSFER: InstFormat          = InstFormat{ mask: 0x0C000000, data: 0x04000000 };
+        const BLOCK_DATA_TRANSFER: InstFormat           = InstFormat{ mask: 0x0E000000, data: 0x08000000 };
+        const BRANCH: InstFormat                        = InstFormat{ mask: 0x0E000000, data: 0x0A000000 };
+        const CO_PROCESOR_DATA_TRANSFER: InstFormat     = InstFormat{ mask: 0x0E000000, data: 0x0C000000 };
+        const CO_PROCESOR_DATA_OPERATION: InstFormat    = InstFormat{ mask: 0x0F000010, data: 0x0E000000 };
+        const CO_PROCESOR_REGISTER_TRANSFER: InstFormat = InstFormat{ mask: 0x0F000010, data: 0x0E000010 };
+        const SOFTWARE_INTERRUPT: InstFormat            = InstFormat{ mask: 0x0F000000, data: 0x0F000000 };
+
+        let cond: u32 = (inst & 0xF0000000) >> 28;
+
+        if Cpu::<T>::is_match_format(inst, DATA_PROCESS) {
+            let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::DataProcess(data_process), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, MULTIPLY){
+            let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::Multiply(multiply), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, MULTIPLY_LONG){
+            let (_, multiply_long) = MultiplyLong::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::MultiplyLong(multiply_long), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_SWAP){
+            let (_, single_data_swap) = SingleDataSwap::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::SingleDataSwap(single_data_swap), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
+            let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::BranchExchange(branch_exchange), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, HW_DATA_TRANSFER){
+            let (_, half_word_data_transfer) = HalfWordDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::HalfWordDataTransfer(half_word_data_transfer), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
+            let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::SingleDataTransfer(single_data_transfer), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, BLOCK_DATA_TRANSFER){
+            let (_, block_data_transfer) = BlockDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::BlockDataTransfer(block_data_transfer), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, BRANCH){
+            let (_, branch) = Branch::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::Branch(branch), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
+            let (_, co_processor_data_transfer) = CoProcessorDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
+            let (_, co_processor_data_operation) = CoProcessorDataOperation::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::CoProcessorDataOperation(co_processor_data_operation), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
+            let (_, co_processor_register_transfer) = CoProcessorRegisterTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond);
+        }
+        else if Cpu::<T>::is_match_format(inst, SOFTWARE_INTERRUPT){
+            let (_, software_interrupt) = SoftwareInterrupt::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+            return (InstKind::SoftwareInterrupt(software_interrupt), cond);
+        }
+        else {
+            return (InstKind::Undefined, cond);
+        }
+    }
+
+
+    pub fn check_add_overflow(a: u32, b: u32, result: u32) -> bool {
+        let a_sign = (a & 0x80000000) != 0;
+        let b_sign = (b & 0x80000000) != 0;
+        let result_sign = (result & 0x80000000) != 0;
+        (a_sign == b_sign) && (a_sign != result_sign)
+    }
+
+    pub fn check_sub_overflow(a: u32, b: u32, result: u32) -> bool {
+        let a_sign = (a & 0x80000000) != 0;
+        let b_sign = (b & 0x80000000) != 0;
+        let result_sign = (result & 0x80000000) != 0;
+        (a_sign != b_sign) && (a_sign != result_sign)
+    }
+
+    pub fn check_carry(a: u32, b: u32, result: u32) -> bool {
+        let a_sign = (a & 0x80000000) != 0;
+        let b_sign = (b & 0x80000000) != 0;
+        let result_sign = (result & 0x80000000) != 0;
+        (a_sign && b_sign) || (a_sign && !result_sign) || (b_sign && !result_sign)
     }
 
     pub fn is_condition_passed(&self, cond: u32) -> bool {
@@ -808,80 +948,6 @@ where T: Bus
         data
     }
 
-    pub fn decode(&self, inst: Word) -> (InstKind, u32) {
-        const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
-        const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
-        const MULTIPLY_LONG: InstFormat                 = InstFormat{ mask: 0x0FC000F0, data: 0x00800090 };
-        const SINGLE_DATA_SWAP: InstFormat              = InstFormat{ mask: 0x0FB00FF0, data: 0x01000090 };
-        const BRANCH_EXCHANGE: InstFormat               = InstFormat{ mask: 0x0FFFFFF0, data: 0x012FFF10 };
-        const HW_DATA_TRANSFER: InstFormat              = InstFormat{ mask: 0x0E000090, data: 0x00000090 };
-        const SINGLE_DATA_TRANSFER: InstFormat          = InstFormat{ mask: 0x0C000000, data: 0x04000000 };
-        const BLOCK_DATA_TRANSFER: InstFormat           = InstFormat{ mask: 0x0E000000, data: 0x08000000 };
-        const BRANCH: InstFormat                        = InstFormat{ mask: 0x0E000000, data: 0x0A000000 };
-        const CO_PROCESOR_DATA_TRANSFER: InstFormat     = InstFormat{ mask: 0x0E000000, data: 0x0C000000 };
-        const CO_PROCESOR_DATA_OPERATION: InstFormat    = InstFormat{ mask: 0x0F000010, data: 0x0E000000 };
-        const CO_PROCESOR_REGISTER_TRANSFER: InstFormat = InstFormat{ mask: 0x0F000010, data: 0x0E000010 };
-        const SOFTWARE_INTERRUPT: InstFormat            = InstFormat{ mask: 0x0F000000, data: 0x0F000000 };
-
-        let cond: u32 = (inst & 0xF0000000) >> 28;
-
-        if Cpu::<T>::is_match_format(inst, DATA_PROCESS) {
-            let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::DataProcess(data_process), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, MULTIPLY){
-            let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::Multiply(multiply), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, MULTIPLY_LONG){
-            let (_, multiply_long) = MultiplyLong::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::MultiplyLong(multiply_long), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_SWAP){
-            let (_, single_data_swap) = SingleDataSwap::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SingleDataSwap(single_data_swap), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
-            let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::BranchExchange(branch_exchange), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, HW_DATA_TRANSFER){
-            let (_, half_word_data_transfer) = HalfWordDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::HalfWordDataTransfer(half_word_data_transfer), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
-            let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SingleDataTransfer(single_data_transfer), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, BLOCK_DATA_TRANSFER){
-            let (_, block_data_transfer) = BlockDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::BlockDataTransfer(block_data_transfer), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, BRANCH){
-            let (_, branch) = Branch::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::Branch(branch), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
-            let (_, co_processor_data_transfer) = CoProcessorDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
-            let (_, co_processor_data_operation) = CoProcessorDataOperation::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorDataOperation(co_processor_data_operation), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
-            let (_, co_processor_register_transfer) = CoProcessorRegisterTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, SOFTWARE_INTERRUPT){
-            let (_, software_interrupt) = SoftwareInterrupt::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SoftwareInterrupt(software_interrupt), cond);
-        }
-        else {
-            return (InstKind::Undefined, cond);
-        }
-    }
-
     pub fn is_match_format(inst: Word, format: InstFormat) -> bool {
         return (inst & format.mask) == format.data;
     }
@@ -964,11 +1030,6 @@ where T: Bus
     }
 
     pub fn set_gpr(&mut self, reg: u8, value: Word) {
-        if reg == 15 {
-            self.r[reg as usize] = value;
-            self.flush_pipeline();
-            ()
-        }
         match self.mode {
             ProcessorMode::User(_) => self.r[reg as usize] = value,
             ProcessorMode::FIQ(_) => if reg < 8 || reg == 15 { self.r[reg as usize] = value } else { self.banked.fiq[reg as usize - 8] = value },
