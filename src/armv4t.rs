@@ -54,21 +54,17 @@ pub struct InstFormat {
 
 
 pub enum Mnemonic{
-    ADC,
-    ADD,
-    AND,
-    B,
-    BL,
-    BIC,
-    BKPT,
-    BLX,
+    ADC,        // impl
+    ADD,        // impl
+    AND,        // impl
+    B,          // impl
+    BL,         // impl
+    BIC,        // impl
     BX,
-    CDP,
-    CLZ,
-    CMN,
-    CMP,
-    EOR,
-    LDC,
+    CMN,        // impl
+    CMP,        // impl
+    EOR,        // impl
+    LDC,        
     LDM,
     LDR,
     LDRB,
@@ -77,16 +73,16 @@ pub enum Mnemonic{
     LDRT,
     MCR,
     MLA,
-    MOV,
+    MOV,        // impl
     MRC,
     MRS,
     MSR,
     MUL,
-    MVN,
-    ORR,
-    RSB,
-    RSC,
-    SBC,
+    MVN,        // impl
+    ORR,        // impl
+    RSB,        // impl
+    RSC,        // impl
+    SBC,        // impl
     SMLAL,
     SMULL,
     STC,
@@ -96,12 +92,12 @@ pub enum Mnemonic{
     STRBT,
     STRH,
     STRT,
-    SUB,
+    SUB,        // impl
     SWI,
     SWP,
     SWPB,
-    TEQ,
-    TST,
+    TEQ,        // impl
+    TST,        // impl
     UMLAL,
     UMULL,
     UND,
@@ -153,46 +149,44 @@ pub struct Multiply {
 
 #[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
-pub struct MultiplyLong {
-    #[deku(bits=4)]
-    pub cond: u32,
-    #[deku(bits=5)]
-    pub _00001: u32,
-    #[deku(bits=1)]
-    pub u: u32,
-    #[deku(bits=1)]
-    pub a: u32,
-    #[deku(bits=1)]
-    pub s: u32,
-    #[deku(bits=4)]
-    pub rd_hi: u32,
-    #[deku(bits=4)]
-    pub rd_lo: u32,
-    #[deku(bits=4)]
-    pub rs: u32,
-    #[deku(bits=4)]
-    pub _1001: u32,
-    #[deku(bits=4)]
-    pub rm: u32,
-}
-
-#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
-#[deku(endian = "big")]
-pub struct SingleDataSwap {
+pub struct ControlImmediate {
     #[deku(bits=4)]
     pub cond: u32,
     #[deku(bits=5)]
     pub _00010: u32,
-    #[deku(bits=1)]
-    pub b: u32,
     #[deku(bits=2)]
-    pub _00: u32,
+    pub op1: u32,
+    #[deku(bits=1)]
+    pub _0: u32,
     #[deku(bits=4)]
     pub rn: u32,
     #[deku(bits=4)]
     pub rd: u32,
+    #[deku(bits=4)]
+    pub rotate_imm: u32,
     #[deku(bits=8)]
-    pub _00001001: u32,
+    pub immed_8: u32,
+}
+
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
+#[deku(endian = "big")]
+pub struct ControlRegister {
+    #[deku(bits=4)]
+    pub cond: u32,
+    #[deku(bits=5)]
+    pub _00010: u32,
+    #[deku(bits=2)]
+    pub op1: u32,
+    #[deku(bits=1)]
+    pub _0: u32,
+    #[deku(bits=4)]
+    pub rn: u32,
+    #[deku(bits=4)]
+    pub rd: u32,
+    #[deku(bits=4)]
+    pub rs: u32,
+    #[deku(bits=4)]
+    pub op2: u32,
     #[deku(bits=4)]
     pub rm: u32,
 }
@@ -210,7 +204,7 @@ pub struct BranchExchange {
 
 #[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
 #[deku(endian = "big")]
-pub struct HalfWordDataTransfer {
+pub struct LoadStoreExtention {
     #[deku(bits=4)]
     pub cond: u32,
     #[deku(bits=3)]
@@ -220,7 +214,7 @@ pub struct HalfWordDataTransfer {
     #[deku(bits=1)]
     pub u: u32,
     #[deku(bits=1)]
-    pub i: u32,
+    pub b: u32,
     #[deku(bits=1)]
     pub w: u32,
     #[deku(bits=1)]
@@ -230,13 +224,11 @@ pub struct HalfWordDataTransfer {
     #[deku(bits=4)]
     pub rd: u32,
     #[deku(bits=4)]
-    pub offset1: u32,
+    pub rs: u32,
     #[deku(bits=1)]
     pub _1: u32,
-    #[deku(bits=1)]
-    pub s: u32,
-    #[deku(bits=1)]
-    pub h: u32,
+    #[deku(bits=2)]
+    pub op1: u32,
     #[deku(bits=1)]
     pub __1: u32,
     #[deku(bits=4)]
@@ -404,10 +396,10 @@ pub struct ShifterOperand {
 pub enum InstKind {
     DataProcess(DataProcess),
     Multiply(Multiply),
-    MultiplyLong(MultiplyLong),
-    SingleDataSwap(SingleDataSwap),
+    ControlImmediate(ControlImmediate),
+    ControlRegister(ControlRegister),
     BranchExchange(BranchExchange),
-    HalfWordDataTransfer(HalfWordDataTransfer),
+    LoadStoreExtention(LoadStoreExtention),
     SingleDataTransfer(SingleDataTransfer),
     BlockDataTransfer(BlockDataTransfer),
     Branch(Branch),
@@ -486,6 +478,27 @@ where T: Bus
         let mut is_pc_changed = false;
         if self.is_condition_passed(cond){
             match decoded_inst {
+                InstKind::SingleDataTransfer(inst) => {
+                    if inst.i != 0 {
+                        let offset = inst.offset;
+                        let address = if inst.u != 0 {
+                            self.get_gpr(inst.rn as u8) + offset
+                        } else {
+                            self.get_gpr(inst.rn as u8) - offset
+                        };
+                        let mut data: Word = 0;
+                        if inst.l != 0 {
+                            _ = self.bus.access(address, &mut data, BusRW::Read);
+                            self.set_gpr(inst.rd as u8, data);
+                        }
+                        else {
+                            data = self.get_gpr(inst.rd as u8);
+                            _ = self.bus.access(address, &mut data, BusRW::Write);
+                        }
+                    }
+                    else {
+                    }
+                }
                 InstKind::DataProcess(inst) => {
                     let shifter_operand = self.get_shifter_operand(&inst);
                     let mut n = self.cpsr.n;
@@ -673,10 +686,11 @@ where T: Bus
     pub fn decode(&self, inst: Word) -> (InstKind, u32) {
         const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
         const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
-        const MULTIPLY_LONG: InstFormat                 = InstFormat{ mask: 0x0FC000F0, data: 0x00800090 };
-        const SINGLE_DATA_SWAP: InstFormat              = InstFormat{ mask: 0x0FB00FF0, data: 0x01000090 };
+        const CONTROL_IMM: InstFormat                   = InstFormat{ mask: 0x0F900000, data: 0x01000000 };
+        const CONTROL_REG1: InstFormat                  = InstFormat{ mask: 0x0F900010, data: 0x03000000 };
+        const CONTROL_REG2: InstFormat                  = InstFormat{ mask: 0x0F900090, data: 0x00000010 };
+        const LOAD_STORE_EXTENTION: InstFormat          = InstFormat{ mask: 0x0E000090, data: 0x00000090 };
         const BRANCH_EXCHANGE: InstFormat               = InstFormat{ mask: 0x0FFFFFF0, data: 0x012FFF10 };
-        const HW_DATA_TRANSFER: InstFormat              = InstFormat{ mask: 0x0E000090, data: 0x00000090 };
         const SINGLE_DATA_TRANSFER: InstFormat          = InstFormat{ mask: 0x0C000000, data: 0x04000000 };
         const BLOCK_DATA_TRANSFER: InstFormat           = InstFormat{ mask: 0x0E000000, data: 0x08000000 };
         const BRANCH: InstFormat                        = InstFormat{ mask: 0x0E000000, data: 0x0A000000 };
@@ -688,28 +702,28 @@ where T: Bus
         let cond: u32 = (inst & 0xF0000000) >> 28;
 
         if Cpu::<T>::is_match_format(inst, DATA_PROCESS) {
+            // arithmetic extention
+            if Cpu::<T>::is_match_format(inst, MULTIPLY){
+                let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+                return (InstKind::Multiply(multiply), cond);
+            }
+            // control extention
+            else if Cpu::<T>::is_match_format(inst, CONTROL_IMM) {
+                let (_, control_extentsion) = ControlImmediate::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+                return (InstKind::ControlImmediate(control_extentsion), cond);
+            }
+            // load/store extension
+
+            else if Cpu::<T>::is_match_format(inst, CONTROL_REG1) || Cpu::<T>::is_match_format(inst, CONTROL_REG2) {
+                let (_, control_register) = ControlRegister::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+                return (InstKind::ControlRegister(control_register), cond);
+            }
             let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
             return (InstKind::DataProcess(data_process), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, MULTIPLY){
-            let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::Multiply(multiply), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, MULTIPLY_LONG){
-            let (_, multiply_long) = MultiplyLong::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::MultiplyLong(multiply_long), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_SWAP){
-            let (_, single_data_swap) = SingleDataSwap::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SingleDataSwap(single_data_swap), cond);
         }
         else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
             let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
             return (InstKind::BranchExchange(branch_exchange), cond);
-        }
-        else if Cpu::<T>::is_match_format(inst, HW_DATA_TRANSFER){
-            let (_, half_word_data_transfer) = HalfWordDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::HalfWordDataTransfer(half_word_data_transfer), cond);
         }
         else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
             let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
