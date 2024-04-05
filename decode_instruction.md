@@ -25,14 +25,41 @@
 ## `opcode[27:25]`
 
 おおまかに実行される命令の種類が決まる  
-`opcode[25]`はオペランドの一つが即値かそうでないかを判定するのに使ったりする(Iフラグともいう)
+`opcode[25]`は第3オペランドが即値かそうでないかを判定するのに使ったりする(`I`フラグともいう)
 
 ### `opcode[27:25] == 0b000, 0b001` 
 
 データ処理命令  
-`opcode[25]`はIフラグとして使われる
+```
+   3                   2                   1
+ 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|x x x x|0 0 I| opcode|S|  rn   |  rd   |    shifter_operand    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+`opcode[25]`はIフラグとして使われる  
+`shifter_operand`は`I`フラグによって扱われ方が変わる
 
 #### `opcode[24:21]` opcode
+
+|`opcode`|mnemonic|やること|
+|:------:|:------:|-------|
+|`0b0000`|`AND`   |bitwise AND|
+|`0b0001`|`EOR`   |bitwise Exclusive-OR|
+|`0b0010`|`SUB`   |subtract|
+|`0b0011`|`RSB`   |reverse subtract|
+|`0b0100`|`ADD`   |add|
+|`0b0101`|`ADC`   |add with carry|
+|`0b0110`|`SBC`   |subtract with carry|
+|`0b0111`|`RSC`   |reverse subtract with carry|
+|`0b1000`|`TST`   |bitwise AND(only change status register)|
+|`0b1001`|`TEQ`   |bitwise Exclusive-OR(only change status register)|
+|`0b1010`|`CMP`   |subtract(only change status register)|
+|`0b1011`|`CMN`   |add(only change status register)|
+|`0b1100`|`ORR`   |bitwise OR|
+|`0b1101`|`MOV`   |move|
+|`0b1110`|`BIC`   |bit clear|
+|`0b1111`|`MVN`   |move negative|
 
 
 
