@@ -53,6 +53,15 @@ pub struct InstFormat {
 }
 
 
+#[derive(Clone)]
+pub struct DecodedInstruction{
+    pub inst: InstKind,
+    pub cond: u32,
+    pub pc: u32,
+    pub mnemonic: Mnemonic,
+}
+
+#[derive(Clone)]
 pub enum Mnemonic{
     ADC,        // impl
     ADD,        // impl
@@ -433,7 +442,7 @@ pub struct Cpu<T: Bus> {
     pub spsr: [Word; 5],
     pub bus: T,
     pub inst: Option<Word>,
-    pub decoded_inst : Option<(InstKind, u32)>,
+    pub decoded_inst : Option<DecodedInstruction>,
 }
 
 
@@ -441,7 +450,7 @@ impl<T> Cpu<T>
 where T: Bus
 {
     pub fn step(&mut self) {
-        let mut decoded_inst: Option<(InstKind, u32)> = None;
+        let mut decoded_inst: Option<DecodedInstruction> = None;
         match self.inst {
             // There is a instruction in pipeline, then decode
             Some(inst) => {
@@ -451,9 +460,9 @@ where T: Bus
         }
         self.inst = Some(self.fetch());
 
-        match self.decoded_inst {
-            Some((inst, cond)) => {
-                let is_pc_changed = self.execute(inst, cond);
+        match &self.decoded_inst {
+            Some(decoded) => {
+                let is_pc_changed = self.execute(decoded.inst, decoded.cond);
                 if is_pc_changed {
                     self.flush_pipeline();
                 }
@@ -683,7 +692,7 @@ where T: Bus
         }
     }
 
-    pub fn decode(&self, inst: Word) -> (InstKind, u32) {
+    pub fn decode(&self, inst: Word) -> DecodedInstruction {
         const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
         const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
         const CONTROL_IMM: InstFormat                   = InstFormat{ mask: 0x0F900000, data: 0x01000000 };
@@ -705,56 +714,61 @@ where T: Bus
             // arithmetic extention
             if Cpu::<T>::is_match_format(inst, MULTIPLY){
                 let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return (InstKind::Multiply(multiply), cond);
+                return DecodedInstruction{inst: InstKind::Multiply(multiply), cond: cond, pc: self.get_gpr(15), mnemonic: match multiply.a {
+                        0 => Mnemonic::MUL,
+                        1 => Mnemonic::MLA,
+                        _ => Mnemonic::UND,
+                    }
+                };
             }
             // control extention
             else if Cpu::<T>::is_match_format(inst, CONTROL_IMM) {
                 let (_, control_extentsion) = ControlImmediate::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return (InstKind::ControlImmediate(control_extentsion), cond);
+                return DecodedInstruction{inst: InstKind::ControlImmediate(control_extentsion), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRS};
             }
             // load/store extension
 
             else if Cpu::<T>::is_match_format(inst, CONTROL_REG1) || Cpu::<T>::is_match_format(inst, CONTROL_REG2) {
                 let (_, control_register) = ControlRegister::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return (InstKind::ControlRegister(control_register), cond);
+                return DecodedInstruction{inst: InstKind::ControlRegister(control_register), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRS};
             }
             let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::DataProcess(data_process), cond);
+            return DecodedInstruction{inst: InstKind::DataProcess(data_process), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::ADD};
         }
         else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
             let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::BranchExchange(branch_exchange), cond);
+            return DecodedInstruction{inst: InstKind::BranchExchange(branch_exchange), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::BX};
         }
         else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
             let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SingleDataTransfer(single_data_transfer), cond);
+            return DecodedInstruction{inst: InstKind::SingleDataTransfer(single_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDR};
         }
         else if Cpu::<T>::is_match_format(inst, BLOCK_DATA_TRANSFER){
             let (_, block_data_transfer) = BlockDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::BlockDataTransfer(block_data_transfer), cond);
+            return DecodedInstruction{inst: InstKind::BlockDataTransfer(block_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDM};
         }
         else if Cpu::<T>::is_match_format(inst, BRANCH){
             let (_, branch) = Branch::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::Branch(branch), cond);
+            return DecodedInstruction{inst: InstKind::Branch(branch), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::B};
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
             let (_, co_processor_data_transfer) = CoProcessorDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond);
+            return DecodedInstruction{inst: InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDC};
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
             let (_, co_processor_data_operation) = CoProcessorDataOperation::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorDataOperation(co_processor_data_operation), cond);
+            return DecodedInstruction{inst: InstKind::CoProcessorDataOperation(co_processor_data_operation), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRC};
         }
         else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
             let (_, co_processor_register_transfer) = CoProcessorRegisterTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond);
+            return DecodedInstruction{inst: InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRC};
         }
         else if Cpu::<T>::is_match_format(inst, SOFTWARE_INTERRUPT){
             let (_, software_interrupt) = SoftwareInterrupt::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return (InstKind::SoftwareInterrupt(software_interrupt), cond);
+            return DecodedInstruction{inst: InstKind::SoftwareInterrupt(software_interrupt), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::SWI};
         }
         else {
-            return (InstKind::Undefined, cond);
+            return DecodedInstruction{inst: InstKind::Undefined, cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::UND};
         }
     }
 
