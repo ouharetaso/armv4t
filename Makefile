@@ -8,7 +8,7 @@ CFLAGS = -march=armv4t -O0
 $(TARGET): program.o
 	$(OBJCOPY) -O binary --only-section=.text $< $@
 
-program.o: program.c
+program.o: program.s
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 .PHONY: clean
