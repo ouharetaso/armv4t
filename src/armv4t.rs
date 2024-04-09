@@ -492,6 +492,42 @@ where T: Bus
         let mut is_pc_changed = false;
         if self.is_condition_passed(cond){
             match decoded_inst {
+                InstKind::BlockDataTransfer(inst) => {
+                    let start_address = if inst.u == 1 && inst.p == 0 {
+                        // increment after
+                        self.get_gpr(inst.rn as u8)
+                    }
+                    else if inst.u == 1 && inst.p == 1 {
+                        // increment before
+                        self.get_gpr(inst.rn as u8) + 4
+                    }
+                    else if inst.u == 0 && inst.p == 0 {
+                        // decrement after
+                        self.get_gpr(inst.rn as u8) - inst.register_list.count_ones() as u32 * 4 + 4
+                    }
+                    else {
+                        // decrement before
+                        self.get_gpr(inst.rn as u8) - inst.register_list.count_ones() as u32 * 4
+                    };
+                    
+                    let mut address = start_address;
+
+                    for i in 0..16 {
+                        if inst.register_list & (1 << i) != 0 {
+                            if inst.l == 1 {
+                                let mut data: Word = 0;
+                                _ = self.bus.access(address, &mut data, BusRW::Read);
+                                self.set_gpr(i as u8, data);
+                            }
+                            else {
+                                let mut data = self.get_gpr(i as u8);
+                                _ = self.bus.access(address, &mut data, BusRW::Write);
+                            }
+                            address = if inst.u == 1 {address + 4} else {address - 4};
+                        }
+                    
+                    }
+                }
                 InstKind::SingleDataTransfer(inst) => {
                     let rn = self.get_gpr(inst.rn as u8);
                     let offset: u32;
