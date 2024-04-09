@@ -434,7 +434,21 @@ pub struct BankedRegisters {
     pub und: [Word; 2],
 }
 
-pub struct Cpu<T: Bus> {
+
+pub enum PipelineState {
+    Fetch,
+    Decode(Word),
+    Execute(InstKind),
+}
+
+
+pub struct DecodedInstruction {
+    pub inst: InstKind,
+    pub cond: u32,
+    pub raw_inst: u32,
+}
+
+pub struct ARMv4T<T: Bus> {
     pub mode: ProcessorMode,
     pub r: [Word; 16],
     pub banked: BankedRegisters,
@@ -446,13 +460,12 @@ pub struct Cpu<T: Bus> {
 }
 
 
-impl<T> Cpu<T>
+impl<T> ARMv4T<T>
 where T: Bus
 {
     pub fn step(&mut self) {
         let mut decoded_inst: Option<DecodedInstruction> = None;
         match self.inst {
-            // There is a instruction in pipeline, then decode
             Some(inst) => {
                 decoded_inst = Some(self.decode(inst));
             }
@@ -488,24 +501,69 @@ where T: Bus
         if self.is_condition_passed(cond){
             match decoded_inst {
                 InstKind::SingleDataTransfer(inst) => {
+                    let rn = self.get_gpr(inst.rn as u8);
+                    let offset: u32;
                     if inst.i != 0 {
-                        let offset = inst.offset;
-                        let address = if inst.u != 0 {
-                            self.get_gpr(inst.rn as u8) + offset
-                        } else {
-                            self.get_gpr(inst.rn as u8) - offset
+                        let rm  = self.get_gpr(get_bit_range(inst.offset, 3, 0) as u8);
+                        let shift_imm = get_bit_range(inst.offset, 11, 7);
+                        offset = match get_bit_range(inst.offset, 6, 5) {
+                            0b00 => rm << shift_imm,
+                            0b01 => rm >> shift_imm,
+                            0b10 => if rm & 0x80000000 != 0 {
+                                (rm >> shift_imm) | (0xFFFFFFFF << (32 - shift_imm))
+                            }
+                            else {
+                                rm >> shift_imm
+                            }
+                            0b11 => if shift_imm != 0 {rm.rotate_right(shift_imm)} else {(rm >> 1)| ((self.cpsr.c as u32) << 31)},
+                            _ => 0,
                         };
-                        let mut data: Word = 0;
+                    }
+                    else {
+                        offset = inst.offset;
+                    }
+                    let address = if inst.u != 0 { rn + offset } else { rn - offset };
+
+                    // normal operation
+                    if inst.p == 1 && inst.w == 0 {
                         if inst.l != 0 {
-                            _ = self.bus.access(address, &mut data, BusRW::Read);
+                            let mut data: Word = 0;
+                            _ =  self.bus.access(address, &mut data, BusRW::Read);
                             self.set_gpr(inst.rd as u8, data);
                         }
                         else {
-                            data = self.get_gpr(inst.rd as u8);
+                            let mut data = self.get_gpr(inst.rd as u8);
                             _ = self.bus.access(address, &mut data, BusRW::Write);
                         }
+                        ()
                     }
-                    else {
+                    // pre-indexed
+                    if inst.p == 1 && inst.w == 1 {
+                        if inst.l != 0 {
+                            let mut data: Word = 0;
+                            _ =  self.bus.access(address, &mut data, BusRW::Read);
+                            self.set_gpr(inst.rd as u8, data);
+                        }
+                        else {
+                            let mut data = self.get_gpr(inst.rd as u8);
+                            _ = self.bus.access(address, &mut data, BusRW::Write);
+                        }
+                        self.set_gpr(inst.rn as u8, address);
+                        ()
+                    }
+                    // post-indexed
+                    if inst.p == 0 && inst.w == 0 {
+                        if inst.l != 0 {
+                            let mut data: Word = 0;
+                            _ =  self.bus.access(rn, &mut data, BusRW::Read);
+                            self.set_gpr(inst.rd as u8, data);
+                        }
+                        else {
+                            let mut data = self.get_gpr(inst.rd as u8);
+                            _ = self.bus.access(rn, &mut data, BusRW::Write);
+                        }
+                        self.set_gpr(inst.rn as u8, address);
+                        ()
                     }
                 }
                 InstKind::DataProcess(inst) => {
@@ -610,7 +668,7 @@ where T: Bus
                             let (_result, _c) = self.get_gpr(inst.rn as u8).overflowing_sub(shifter_operand.shifter_operand);
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
-                            v = Cpu::<T>::check_sub_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
+                            v = check_sub_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
                             c = _c as u32;
                             self.get_gpr(inst.rd as u8)
                         },
@@ -619,7 +677,7 @@ where T: Bus
                             let (_result, _c) = shifter_operand.shifter_operand.overflowing_add(self.get_gpr(inst.rn as u8));
                             n = ((_result & 0x80000000) != 0) as u32;
                             z = (_result == 0) as u32;
-                            v = Cpu::<T>::check_add_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
+                            v = check_add_overflow(self.get_gpr(inst.rn as u8), shifter_operand.shifter_operand, _result) as u32;
                             c = _c as u32;
                             self.get_gpr(inst.rd as u8)
                         },
@@ -709,89 +767,67 @@ where T: Bus
         const SOFTWARE_INTERRUPT: InstFormat            = InstFormat{ mask: 0x0F000000, data: 0x0F000000 };
 
         let cond: u32 = (inst & 0xF0000000) >> 28;
+        let mut inst_kind: InstKind = InstKind::Undefined;
 
-        if Cpu::<T>::is_match_format(inst, DATA_PROCESS) {
+        if is_match_format(inst, DATA_PROCESS) {
             // arithmetic extention
-            if Cpu::<T>::is_match_format(inst, MULTIPLY){
+            if is_match_format(inst, MULTIPLY){
                 let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return DecodedInstruction{inst: InstKind::Multiply(multiply), cond: cond, pc: self.get_gpr(15), mnemonic: match multiply.a {
-                        0 => Mnemonic::MUL,
-                        1 => Mnemonic::MLA,
-                        _ => Mnemonic::UND,
-                    }
-                };
+                inst_kind = InstKind::Multiply(multiply);
             }
             // control extention
-            else if Cpu::<T>::is_match_format(inst, CONTROL_IMM) {
+            else if is_match_format(inst, CONTROL_IMM) {
                 let (_, control_extentsion) = ControlImmediate::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return DecodedInstruction{inst: InstKind::ControlImmediate(control_extentsion), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRS};
+                inst_kind = InstKind::ControlImmediate(control_extentsion);
             }
             // load/store extension
-
-            else if Cpu::<T>::is_match_format(inst, CONTROL_REG1) || Cpu::<T>::is_match_format(inst, CONTROL_REG2) {
+            else if is_match_format(inst, CONTROL_REG1) || is_match_format(inst, CONTROL_REG2) {
                 let (_, control_register) = ControlRegister::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-                return DecodedInstruction{inst: InstKind::ControlRegister(control_register), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRS};
+                inst_kind = InstKind::ControlRegister(control_register);
             }
             let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::DataProcess(data_process), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::ADD};
+            inst_kind = InstKind::DataProcess(data_process);
         }
-        else if Cpu::<T>::is_match_format(inst, BRANCH_EXCHANGE){
+        else if is_match_format(inst, BRANCH_EXCHANGE){
             let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::BranchExchange(branch_exchange), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::BX};
+            inst_kind = InstKind::BranchExchange(branch_exchange);
         }
-        else if Cpu::<T>::is_match_format(inst, SINGLE_DATA_TRANSFER){
+        else if is_match_format(inst, SINGLE_DATA_TRANSFER){
             let (_, single_data_transfer) = SingleDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::SingleDataTransfer(single_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDR};
+            inst_kind = InstKind::SingleDataTransfer(single_data_transfer);
         }
-        else if Cpu::<T>::is_match_format(inst, BLOCK_DATA_TRANSFER){
+        else if is_match_format(inst, BLOCK_DATA_TRANSFER){
             let (_, block_data_transfer) = BlockDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::BlockDataTransfer(block_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDM};
+            inst_kind = InstKind::BlockDataTransfer(block_data_transfer);
         }
-        else if Cpu::<T>::is_match_format(inst, BRANCH){
+        else if is_match_format(inst, BRANCH){
             let (_, branch) = Branch::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::Branch(branch), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::B};
+            inst_kind = InstKind::Branch(branch);
         }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
+        else if is_match_format(inst, CO_PROCESOR_DATA_TRANSFER){
             let (_, co_processor_data_transfer) = CoProcessorDataTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::CoProcessorDataTransfer(co_processor_data_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::LDC};
+            inst_kind = InstKind::CoProcessorDataTransfer(co_processor_data_transfer);
         }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
+        else if is_match_format(inst, CO_PROCESOR_DATA_OPERATION){
             let (_, co_processor_data_operation) = CoProcessorDataOperation::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::CoProcessorDataOperation(co_processor_data_operation), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRC};
+            inst_kind = InstKind::CoProcessorDataOperation(co_processor_data_operation);
         }
-        else if Cpu::<T>::is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
+        else if is_match_format(inst, CO_PROCESOR_REGISTER_TRANSFER){
             let (_, co_processor_register_transfer) = CoProcessorRegisterTransfer::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::MRC};
+            inst_kind = InstKind::CoProcessorRegisterTransfer(co_processor_register_transfer);
         }
-        else if Cpu::<T>::is_match_format(inst, SOFTWARE_INTERRUPT){
+        else if is_match_format(inst, SOFTWARE_INTERRUPT){
             let (_, software_interrupt) = SoftwareInterrupt::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            return DecodedInstruction{inst: InstKind::SoftwareInterrupt(software_interrupt), cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::SWI};
+            inst_kind = InstKind::SoftwareInterrupt(software_interrupt);
         }
         else {
-            return DecodedInstruction{inst: InstKind::Undefined, cond: cond, pc: self.get_gpr(15), mnemonic: Mnemonic::UND};
+            inst_kind = InstKind::Undefined;
         }
-    }
-
-
-    pub fn check_add_overflow(a: u32, b: u32, result: u32) -> bool {
-        let a_sign = (a & 0x80000000) != 0;
-        let b_sign = (b & 0x80000000) != 0;
-        let result_sign = (result & 0x80000000) != 0;
-        (a_sign == b_sign) && (a_sign != result_sign)
-    }
-
-    pub fn check_sub_overflow(a: u32, b: u32, result: u32) -> bool {
-        let a_sign = (a & 0x80000000) != 0;
-        let b_sign = (b & 0x80000000) != 0;
-        let result_sign = (result & 0x80000000) != 0;
-        (a_sign != b_sign) && (a_sign != result_sign)
-    }
-
-    pub fn check_carry(a: u32, b: u32, result: u32) -> bool {
-        let a_sign = (a & 0x80000000) != 0;
-        let b_sign = (b & 0x80000000) != 0;
-        let result_sign = (result & 0x80000000) != 0;
-        (a_sign && b_sign) || (a_sign && !result_sign) || (b_sign && !result_sign)
+        DecodedInstruction {
+            inst: inst_kind,
+            cond: cond,
+            raw_inst: inst 
+        }
     }
 
     pub fn is_condition_passed(&self, cond: u32) -> bool {
@@ -976,14 +1012,9 @@ where T: Bus
         data
     }
 
-    pub fn is_match_format(inst: Word, format: InstFormat) -> bool {
-        return (inst & format.mask) == format.data;
-    }
 
-
-
-    pub fn new(bus: T) -> Cpu<T> {
-        Cpu {
+    pub fn new(bus: T) -> ARMv4T<T> {
+        ARMv4T {
             mode: ProcessorMode::Supervisor(0),
             r: [0; 16],
             banked: BankedRegisters {
@@ -1009,6 +1040,7 @@ where T: Bus
             bus: bus,
             inst: None,
             decoded_inst: None,
+            pipeline: [Some(PipelineState::Fetch), None, None ],
         }
     }
 
@@ -1119,7 +1151,248 @@ where T: Bus
 }
 
 
-impl<T: Bus> std::fmt::Display for Cpu<T> {
+pub fn is_match_format(inst: Word, format: InstFormat) -> bool {
+    return (inst & format.mask) == format.data;
+}
+
+
+pub fn get_bit_range(data: Word, msb: u8, lsb: u8) -> Word {
+    if lsb > msb {
+        return 0;
+    }
+
+    let mask: u32 = ((1 << (msb - lsb + 1)) - 1) << lsb;
+    return (data & mask) >> lsb;
+}
+
+
+pub fn disassemble(inst: Word) -> String {
+    let mut mnemonic: String = "".to_string();
+    let mut operand: String = "".to_string();
+    let cond = get_bit_range(inst, 31, 28);
+
+    let parse_shifter_operand =  |shifter_operand: u32, i: bool| -> String {
+        if i {
+            let rotate_imm = get_bit_range(shifter_operand, 11, 8);
+            let immed_8 = get_bit_range(shifter_operand, 7, 0);
+            format!("#{}", immed_8.rotate_right(rotate_imm * 2))
+        }
+        else {
+            let shift = match get_bit_range(shifter_operand, 6, 5) {
+                0b00 => if get_bit_range(shifter_operand, 11, 4) == 0b00000000 {
+                    format!("r{}", get_bit_range(shifter_operand, 3, 0))
+                }
+                else {
+                    "LSL".to_string()
+                }
+                0b01 => "LSR".to_string(),
+                0b10 => "ASR".to_string(),
+                0b11 => if get_bit_range(shifter_operand, 11, 4) == 0b00000110 {
+                    "RRX".to_string()
+                }
+                else {
+                    "ROR".to_string()
+                },
+                _ => "".to_string(),              
+            };
+
+            
+            let shift_amount = if get_bit_range(shifter_operand, 11, 4) == 0b00000110 {
+                // RRX
+                "".to_string()
+            }
+            else if get_bit_range(shifter_operand, 11, 4) == 0b00000000 {
+                // LSL #0
+                "".to_string()
+            }
+            // immediate shift
+            else if get_bit_range(shifter_operand, 4, 4) == 0 {
+                format!("#{}", get_bit_range(shifter_operand, 11, 7))
+            }
+            // regsiter shift
+            else {
+                format!("r{}", get_bit_range(shifter_operand, 11, 8))
+            };
+
+            format!("{} {}", shift, shift_amount)
+        }
+    };
+
+    let push_cond_mnemonic = |mnemonic: &mut String| -> () {
+        mnemonic.push_str(match cond {
+            0b0000 => "eq",
+            0b0001 => "ne",
+            0b0010 => "cs",
+            0b0011 => "cc",
+            0b0100 => "mi",
+            0b0101 => "pl",
+            0b0110 => "vs",
+            0b0111 => "vc",
+            0b1000 => "hi",
+            0b1001 => "ls",
+            0b1010 => "ge",
+            0b1011 => "lt",
+            0b1100 => "gt",
+            0b1101 => "le",
+            0b1110 => "",
+            0b1111 => "nv",
+            _ => "",
+        });
+    };
+
+    // ADC
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00A00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"adcs"} else {"adc"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // ADD
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00800000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"adds"} else {"add"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // AND
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00800000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"ands"} else {"and"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // BIC
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x01C00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"bics"} else {"bic"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // CMN
+    if is_match_format(inst, InstFormat{mask: 0x0DF00000, data: 0x01700000}){
+        mnemonic.push_str("cmn");
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // CMP
+    if is_match_format(inst, InstFormat{mask: 0x0DF00000, data: 0x01500000}){
+        mnemonic.push_str("cmp");
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // TST
+    if is_match_format(inst, InstFormat{mask: 0x0DF00000, data: 0x01100000}){
+        mnemonic.push_str("tst");
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // TEQ
+    if is_match_format(inst, InstFormat{mask: 0x0DF00000, data: 0x01300000}){
+        mnemonic.push_str("teq");
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // SBC
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00C00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"sbcs"} else {"sbc"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // SUB
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00400000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"subs"} else {"sub"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // RSC
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00E00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"rscs"} else {"rsc"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // RSB
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00600000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"rsbs"} else {"rsb"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // MOV
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x01A00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"movs"} else {"mov"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // MVN
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x01E00000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"mvns"} else {"mvn"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // EOR
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x00200000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"eors"} else {"eor"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+    // ORR
+    if is_match_format(inst, InstFormat{mask: 0x0DE00000, data: 0x01800000}){
+        mnemonic.push_str(if get_bit_range(inst, 20, 20) == 1 {"orrs"} else {"orr"});
+        push_cond_mnemonic(&mut mnemonic);
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 15, 12)));
+        operand.push_str(&format!("r{}, ", get_bit_range(inst, 19, 16)));
+        operand.push_str(&parse_shifter_operand(get_bit_range(inst, 11, 0), get_bit_range(inst, 25, 25) != 0));
+    }
+
+    format!("{:<6}  {}", mnemonic, operand)
+}
+
+
+
+
+pub fn check_add_overflow(a: u32, b: u32, result: u32) -> bool {
+    let a_sign = (a & 0x80000000) != 0;
+    let b_sign = (b & 0x80000000) != 0;
+    let result_sign = (result & 0x80000000) != 0;
+    (a_sign == b_sign) && (a_sign != result_sign)
+}
+
+pub fn check_sub_overflow(a: u32, b: u32, result: u32) -> bool {
+    let a_sign = (a & 0x80000000) != 0;
+    let b_sign = (b & 0x80000000) != 0;
+    let result_sign = (result & 0x80000000) != 0;
+    (a_sign != b_sign) && (a_sign != result_sign)
+}
+
+pub fn check_carry(a: u32, b: u32, result: u32) -> bool {
+    let a_sign = (a & 0x80000000) != 0;
+    let b_sign = (b & 0x80000000) != 0;
+    let result_sign = (result & 0x80000000) != 0;
+    (a_sign && b_sign) || (a_sign && !result_sign) || (b_sign && !result_sign)
+}
+
+
+
+impl<T: Bus> std::fmt::Display for ARMv4T<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut formatted_string: String = "".to_string();
 
@@ -1131,8 +1404,11 @@ impl<T: Bus> std::fmt::Display for Cpu<T> {
             }
             else {
                 formatted_string.push_str(" ");
-                
             }
+        }
+        
+        if let Some(decoded_inst) = &self.decoded_inst {
+            formatted_string.push_str(&format!("\n{}\n", disassemble(decoded_inst.raw_inst)));
         }
 
         write!(f, "{}", formatted_string)

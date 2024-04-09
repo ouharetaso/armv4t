@@ -48,11 +48,12 @@ fn main() {
     for i in 0..program.len(){
         mem.load(i as u32, program[i]);
     }
-    let mut cpu = Cpu::<MyMemory>::new(mem);
+    let mut cpu = ARMv4T::<MyMemory>::new(mem);
     cpu.reset();
     println!("{}", cpu);
 
     loop{
         cpu.step();
+        println!("{}", cpu);
     }
 }
