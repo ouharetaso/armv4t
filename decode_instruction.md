@@ -1,4 +1,7 @@
 # ARMv4T命令のデコード
+
+ARM Architecture Reference manual(ARM DDI 0100E)の内容をもとに書いています
+
 ## `cond`フィールド (`opcode[31:28]`)
 
 ステータスレジスタを見て命令を実行するかを決める
@@ -19,7 +22,7 @@
 |`0b1100`|`GT`                     |signed **G**reater **T**han | `Z == 0 && N == V`   |
 |`0b1101`|`LE`                     |signed **L**ess than or **E**qual| `Z == 1 && N != V`   |
 |`0b1110`|`AL`                     |**AL**ways(常に実行)| - |
-|`0b1111`|`(NV)`                     |よくわかんない| - |
+|`0b1111`|`(NV)`                   |**N**e**V**er(実行されない)| - |
 
 
 ## `opcode[27:25]`
@@ -64,7 +67,7 @@
 #### `S`
 演算結果によってステータスフラグ(`N`,`Z`,`C`,`V`)を変更するかどうか決めるフラグ  
 比較命令(`TST`,`TEQ`,`CMP`,`CMN`)はこれが常に1になっている  
-`opcode`が`TST`,`TEQ`,`CMP`,`CMN`のうちの1つであるのに`S`が0であるオペコードはそれらとは違った拡張命令として使われる
+`opcode`が`TST`,`TEQ`,`CMP`,`CMN`のうちの1つであるのに`S`が0であるオペコードはそれらとは違った拡張命令として使われる(3.13.3 Control instruction extention spaceを参照)
 
 
 #### `rn, rd`
@@ -72,7 +75,6 @@
 第2オペランド(rn)と第1オペランド(rd)
 
 #### `shifter_operand`
-
 
 ##### `I == 0`のとき
 
@@ -96,7 +98,7 @@
 ```
 
 `shifter_operand[4] == 1`のとき必ず`shifter_operand[7] == 0`でなければならない  
-`shifter_operand[4] == 1`かつ`shifter_operand[7] == 1`はデータ演算命令以外の命令に使われている
+`shifter_operand[4] == 1`かつ`shifter_operand[7] == 1`はデータ演算命令以外の命令に使われている(3.13.2 Arithmetic instruction extention spaceおよび3.13.4 Load/store instruction extention spaceを参照)
 
 ###### `shifter_operand[6:5]`
 
@@ -107,7 +109,7 @@
 |`0b10`                |`ASR`   |算術右シフト|
 |`0b11`                |`ROR`   |右ローテート|
 
-`ROR`は即値シフト(`shifter_operand[4] == 0 &&`)かつ`shift_imm == 0`のとき`RRX`(キャリーフラグを含んだ右ローテート1)になる
+`ROR`は即値シフト(`shifter_operand[4] == 0`)かつ`shift_imm == 0`のとき`RRX`(キャリーフラグを含んだ右ローテート1)になる
 
 
 ##### `I == 1`のとき
