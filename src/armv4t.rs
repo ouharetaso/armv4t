@@ -54,14 +54,6 @@ pub struct InstFormat {
 
 
 #[derive(Clone)]
-pub struct DecodedInstruction{
-    pub inst: InstKind,
-    pub cond: u32,
-    pub pc: u32,
-    pub mnemonic: Mnemonic,
-}
-
-#[derive(Clone)]
 pub enum Mnemonic{
     ADC,        // impl
     ADD,        // impl
@@ -1040,7 +1032,6 @@ where T: Bus
             bus: bus,
             inst: None,
             decoded_inst: None,
-            pipeline: [Some(PipelineState::Fetch), None, None ],
         }
     }
 
