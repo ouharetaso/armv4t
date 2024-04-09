@@ -813,8 +813,10 @@ where T: Bus
                 let (_, control_register) = ControlRegister::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
                 inst_kind = InstKind::ControlRegister(control_register);
             }
-            let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
-            inst_kind = InstKind::DataProcess(data_process);
+            else {
+                let (_, data_process) = DataProcess::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+                inst_kind = InstKind::DataProcess(data_process);
+            }
         }
         else if is_match_format(inst, BRANCH_EXCHANGE){
             let (_, branch_exchange) = BranchExchange::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
