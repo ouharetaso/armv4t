@@ -5,6 +5,7 @@ type HalfWord = u16;
 type Word = u32;
 
 #[repr(u8)]
+#[derive(PartialEq)]
 pub enum ProcessorMode {
     User(u8) = 0x10,
     FIQ(u8) = 0x11,
@@ -61,13 +62,13 @@ pub enum Mnemonic{
     B,          // impl
     BL,         // impl
     BIC,        // impl
-    BX,
+    BX,         // impl
     CMN,        // impl
     CMP,        // impl
     EOR,        // impl
     LDC,        
-    LDM,
-    LDR,
+    LDM,        // impl
+    LDR,        // impl
     LDRB,
     LDRBT,
     LDRH,
@@ -87,8 +88,8 @@ pub enum Mnemonic{
     SMLAL,
     SMULL,
     STC,
-    STM,
-    STR,
+    STM,        // impl
+    STR,        // impl
     STRB,
     STRBT,
     STRH,
@@ -154,7 +155,7 @@ pub struct ControlImmediate {
     #[deku(bits=4)]
     pub cond: u32,
     #[deku(bits=5)]
-    pub _00010: u32,
+    pub _00110: u32,
     #[deku(bits=2)]
     pub op1: u32,
     #[deku(bits=1)]
@@ -492,6 +493,24 @@ where T: Bus
         let mut is_pc_changed = false;
         if self.is_condition_passed(cond){
             match decoded_inst {
+                InstKind::ControlImmediate(inst) => {
+                    let operand = inst.immed_8.rotate_right(inst.rotate_imm * 2);
+                    let mut mask = 0x0;
+                    for i in 0..4 {
+                        mask |= (if inst.rn & (1 << i) != 0 {0xFF} else {0x00}) << i * 8;
+                    }   
+                    if inst.op1 & 0b10 != 0 && self.mode != ProcessorMode::User(0) && self.mode != ProcessorMode::System(0) {
+                        self.set_spsr(operand & mask);
+                    }
+                    else {
+                        self.set_cpsr(CpsrFlags::from_bytes(((operand & mask).to_be_bytes().as_ref(), 0)).unwrap().1 );
+                    }
+                }
+                InstKind::BranchExchange(inst) => {
+                    self.set_gpr(inst.rn as u8, self.get_gpr(14));
+                    self.cpsr.t = self.get_gpr(inst.rn as u8) & 0x1;
+                    is_pc_changed = true;
+                }
                 InstKind::BlockDataTransfer(inst) => {
                     let start_address = if inst.u == 1 && inst.p == 0 {
                         // increment after
@@ -758,12 +777,17 @@ where T: Bus
                     }
                 },
                 InstKind::Branch(inst) => {
-                    let offset = inst.offset << 2;
+                    let offset = if inst.offset & 0x800000 != 0 {
+                        (inst.offset | 0xFF000000) << 2
+                    }
+                    else {
+                        (inst.offset) << 2
+                    };
                     let link = inst.l != 0;
                     if link {
                         self.set_gpr(14, self.get_gpr(15) - 4);
                     }
-                    self.set_gpr(   15, self.get_gpr(15) + offset);
+                    self.set_gpr(   15, self.get_gpr(15).overflowing_add(offset).0);
                     is_pc_changed = true;
                 },
                 _ => {
