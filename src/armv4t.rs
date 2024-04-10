@@ -522,20 +522,35 @@ where T: Bus
                 // TODO
                 // LoadStoreExtention
                 // SoftwareInterrupt
-                // Multiply
-                //   - SMLAL
-                //   - SMULL
-                //   - UMLAL
-                //   - UMULL
                 InstKind::MultiplyLong(inst) => {
                     let rdhi: u32;
                     let rdlo: u32;
                     if inst.signed != 0 {
-
+                        let result_i64 = self.get_gpr(inst.rm as u8) as i64 * self.get_gpr(inst.rs as u8) as i64;
+                        if inst.a != 0 {
+                            let rdlo_carry: bool;
+                            (rdlo, rdlo_carry) = self.get_gpr(inst.rn as u8).overflowing_add((result_i64 & 0xFFFFFFFF) as u32);
+                            rdhi = self.get_gpr(inst.rd as u8).overflowing_add((result_i64 >> 32) as u32 + rdlo_carry as u32).0;
+                        }
+                        else {
+                            rdlo = (result_i64 & 0xFFFFFFFF)as u32;
+                            rdhi = (result_i64 >> 32) as u32;
+                        }
                     }
                     else {
-                        
+                        let result_u64 = self.get_gpr(inst.rm as u8) as u64 * self.get_gpr(inst.rs as u8) as u64;
+                        if inst.a != 0 {
+                            let rdlo_carry: bool;
+                            (rdlo, rdlo_carry) = self.get_gpr(inst.rn as u8).overflowing_add((result_u64 & 0xFFFFFFFF) as u32);
+                            rdhi = self.get_gpr(inst.rd as u8).overflowing_add((result_u64 >> 32) as u32 + rdlo_carry as u32).0;
+                        }
+                        else {
+                            rdlo = (result_u64 & 0xFFFFFFFF)as u32;
+                            rdhi = (result_u64 >> 32) as u32;
+                        }
                     }
+                    self.set_gpr(inst.rd as u8, rdhi);
+                    self.set_gpr(inst.rn as u8, rdlo);
                 }
                 InstKind::Multiply(inst) => {
                     let (result, _) = self.get_gpr(inst.rm as u8).overflowing_mul(self.get_gpr(inst.rs as u8));
