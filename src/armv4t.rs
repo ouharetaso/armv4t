@@ -69,39 +69,39 @@ pub enum Mnemonic{
     LDC,        
     LDM,        // impl
     LDR,        // impl
-    LDRB,
-    LDRBT,
-    LDRH,
-    LDRT,
+    LDRB,       // TODO
+    LDRBT,      // TODO
+    LDRH,       // TODO
+    LDRT,       // TODO
     MCR,
-    MLA,
+    MLA,        // impl
     MOV,        // impl
     MRC,
-    MRS,
-    MSR,
-    MUL,
+    MRS,        // impl
+    MSR,        // impl 
+    MUL,        // impl
     MVN,        // impl
     ORR,        // impl
     RSB,        // impl
     RSC,        // impl
     SBC,        // impl
-    SMLAL,
-    SMULL,
+    SMLAL,      // TODO
+    SMULL,      // TODO
     STC,
     STM,        // impl
     STR,        // impl
-    STRB,
-    STRBT,
-    STRH,
-    STRT,
+    STRB,       // TODO
+    STRBT,      // TODO
+    STRH,       // TODO
+    STRT,       // TODO
     SUB,        // impl
-    SWI,
-    SWP,
-    SWPB,
+    SWI,        // TODO
+    SWP,        // TODO
+    SWPB,       // TODO
     TEQ,        // impl
     TST,        // impl
-    UMLAL,
-    UMULL,
+    UMLAL,      // TODO
+    UMULL,      // TODO
     UND,
 }
 
@@ -133,6 +133,31 @@ pub struct Multiply {
     pub cond: u32,
     #[deku(bits=6)]
     pub _000000: u32,
+    #[deku(bits=1)]
+    pub a: u32,
+    #[deku(bits=1)]
+    pub s: u32,
+    #[deku(bits=4)]
+    pub rd: u32,
+    #[deku(bits=4)]
+    pub rn: u32,
+    #[deku(bits=4)]
+    pub rs: u32,
+    #[deku(bits=4)]
+    pub _1001: u32,
+    #[deku(bits=4)]
+    pub rm: u32,
+}
+
+#[derive(Debug, PartialEq, DekuRead, DekuWrite, Copy, Clone)]
+#[deku(endian = "big")]
+pub struct MultiplyLong {
+    #[deku(bits=4)]
+    pub cond: u32,
+    #[deku(bits=5)]
+    pub _00001: u32,
+    #[deku(bits=1)]
+    pub signed: u32,
     #[deku(bits=1)]
     pub a: u32,
     #[deku(bits=1)]
@@ -398,6 +423,7 @@ pub struct ShifterOperand {
 pub enum InstKind {
     DataProcess(DataProcess),
     Multiply(Multiply),
+    MultiplyLong(MultiplyLong),
     ControlImmediate(ControlImmediate),
     ControlRegister(ControlRegister),
     BranchExchange(BranchExchange),
@@ -493,6 +519,32 @@ where T: Bus
         let mut is_pc_changed = false;
         if self.is_condition_passed(cond){
             match decoded_inst {
+                // TODO
+                // LoadStoreExtention
+                // SoftwareInterrupt
+                // Multiply
+                //   - SMLAL
+                //   - SMULL
+                //   - UMLAL
+                //   - UMULL
+                InstKind::MultiplyLong(inst) => {
+                    let rdhi: u32;
+                    let rdlo: u32;
+                    if inst.signed != 0 {
+
+                    }
+                    else {
+                        
+                    }
+                }
+                InstKind::Multiply(inst) => {
+                    let (result, _) = self.get_gpr(inst.rm as u8).overflowing_mul(self.get_gpr(inst.rs as u8));
+                    if inst.s != 0 {
+                        self.cpsr.n = ((result & 0x80000000) != 0) as u32;
+                        self.cpsr.z = (result == 0) as u32;
+                    }
+                    self.set_gpr(inst.rd as u8, result + if inst.a != 0 {self.get_gpr(inst.rn as u8)} else {0});
+                }
                 InstKind::ControlImmediate(inst) => {
                     let operand = inst.immed_8.rotate_right(inst.rotate_imm * 2);
                     let mut mask = 0x0;
@@ -500,10 +552,42 @@ where T: Bus
                         mask |= (if inst.rn & (1 << i) != 0 {0xFF} else {0x00}) << i * 8;
                     }   
                     if inst.op1 & 0b10 != 0 && self.mode != ProcessorMode::User(0) && self.mode != ProcessorMode::System(0) {
-                        self.set_spsr(operand & mask);
+                        let spsr = self.get_spsr() & !mask;
+
+                        self.set_spsr(spsr | (operand & mask));
                     }
                     else {
-                        self.set_cpsr(CpsrFlags::from_bytes(((operand & mask).to_be_bytes().as_ref(), 0)).unwrap().1 );
+                        let cpsr = u32::from_be_bytes(self.get_cpsr().to_bytes().unwrap().try_into().unwrap()) & !mask;
+                        self.set_cpsr(CpsrFlags::from_bytes(((cpsr | (operand & mask)).to_be_bytes().as_ref(), 0)).unwrap().1 );
+                    }
+                }
+                InstKind::ControlRegister(inst) => {
+                    let operand = self.get_gpr(inst.rm as u8);
+                    let mut mask = 0x0;
+                    for i in 0..4 {
+                        mask |= (if inst.rn & (1 << i) != 0 {0xFF} else {0x00}) << i * 8;
+                    }
+
+                    // MSR
+                    if inst.op1 & 0b01 != 0 {
+                        if inst.op1 & 0b10 != 0 && self.mode != ProcessorMode::User(0) && self.mode != ProcessorMode::System(0) {
+                            let spsr = self.get_spsr() & !mask;
+    
+                            self.set_spsr(spsr | (operand & mask));
+                        }
+                        else {
+                            let cpsr = u32::from_be_bytes(self.get_cpsr().to_bytes().unwrap().try_into().unwrap()) & !mask;
+                            self.set_cpsr(CpsrFlags::from_bytes(((cpsr | (operand & mask)).to_be_bytes().as_ref(), 0)).unwrap().1 );
+                        }
+                    }
+                    // MRS
+                    else {
+                        if inst.op1 & 0b10 != 0 && self.mode != ProcessorMode::User(0) && self.mode != ProcessorMode::System(0) {
+                            self.set_gpr(inst.rd as u8, self.get_spsr() & mask);
+                        }
+                        else {
+                            self.set_gpr(inst.rd as u8, u32::from_be_bytes(self.get_cpsr().to_bytes().unwrap().try_into().unwrap()) & mask);
+                        }
                     }
                 }
                 InstKind::BranchExchange(inst) => {
@@ -805,6 +889,7 @@ where T: Bus
     pub fn decode(&self, inst: Word) -> DecodedInstruction {
         const DATA_PROCESS: InstFormat                  = InstFormat{ mask: 0x0c000000, data: 0x00000000 };
         const MULTIPLY: InstFormat                      = InstFormat{ mask: 0x0FC000F0, data: 0x00000090 };
+        const MULTIPLY_LONG: InstFormat                 = InstFormat{ mask: 0x0F8000F0, data: 0x00800090 };
         const CONTROL_IMM: InstFormat                   = InstFormat{ mask: 0x0F900000, data: 0x01000000 };
         const CONTROL_REG1: InstFormat                  = InstFormat{ mask: 0x0F900010, data: 0x03000000 };
         const CONTROL_REG2: InstFormat                  = InstFormat{ mask: 0x0F900090, data: 0x00000010 };
@@ -826,6 +911,10 @@ where T: Bus
             if is_match_format(inst, MULTIPLY){
                 let (_, multiply) = Multiply::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
                 inst_kind = InstKind::Multiply(multiply);
+            }
+            else if is_match_format(inst, MULTIPLY_LONG){
+                let (_, multiply_long) = MultiplyLong::from_bytes((inst.to_be_bytes().as_ref(), 0)).unwrap();
+                inst_kind = InstKind::MultiplyLong(multiply_long);
             }
             // control extention
             else if is_match_format(inst, CONTROL_IMM) {
